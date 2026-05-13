@@ -1,0 +1,16 @@
+L7 HTTP API 測試 192.168.0.199...
+[+] API 成功，設備資訊：
+<!doctype html>
+<html lang="">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/assets/cal.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ä¸­è¯èªç©ºAIæºæ§å·¥å®è¾¨è­èäºä»¶ç®¡çç³»çµ±</title>
+    <script type="module" crossorigin src="/assets/index-BAxysDUc.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DXbHWEdm.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
