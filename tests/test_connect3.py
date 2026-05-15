@@ -4,10 +4,10 @@ from requests.auth import HTTPDigestAuth
 # =========================
 # Device Information
 # =========================
-DEVICE_IP = "192.168.1.108"
+DEVICE_IP = "192.168.0.80"
 # DEVICE_IP = "192.168.0.108"
 USERNAME = "admin"
-PASSWORD = "admin"
+PASSWORD = "ai123456"
 
 # =========================
 # API URL
