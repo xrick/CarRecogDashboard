@@ -368,6 +368,14 @@ class Worker(QObject):
             self.failure.emit(f"{e}\n{traceback.format_exc()}")
 
 
+class _Bus(QObject):
+    """常駐於 GUI thread 的訊號橋。client 在 worker thread 內呼叫
+    log_line.emit(str) 是 thread-safe 的；接收端（GUI thread 的 _log）
+    因 thread affinity 自動以 QueuedConnection 執行，QTextEdit 操作回到
+    GUI thread，避免 'Cannot queue QTextCursor' 崩潰。"""
+    log_line = pyqtSignal(str)
+
+
 # ----------------------------- Vehicle Dialog ----------------------------- #
 
 class VehicleDialog(QDialog):
@@ -428,6 +436,11 @@ class WhitelistWindow(QMainWindow):
         self.client: VehicleRegisterDBClient | None = None
         self._thread: QThread | None = None
         self._worker: Worker | None = None
+        self._pending_ok = None
+        self._pending_err = None
+        # 常駐訊號橋（建立於 GUI thread）— worker thread 只能 .emit()
+        self._bus = _Bus()
+        self._bus.log_line.connect(self._log)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -561,39 +574,47 @@ class WhitelistWindow(QMainWindow):
             QMessageBox.information(self, "請稍候", "上一個請求仍在執行。")
             return
         self._busy(True)
+        self._pending_ok = on_success
+        self._pending_err = on_failure
         self._thread = QThread(self)
         self._worker = Worker(fn, *args, **kwargs)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-
-        def _cleanup() -> None:
-            """必須在執行使用者 callback **之前**跑完，否則 callback 內若再
-            觸發 _run_async 會被開頭的 self._thread is not None 擋掉。"""
-            self._busy(False)
-            t, w = self._thread, self._worker
-            self._thread = None
-            self._worker = None
-            if t is not None:
-                t.quit()
-                t.wait()
-                t.deleteLater()
-            if w is not None:
-                w.deleteLater()
-
-        def _finish_ok(r):
-            _cleanup()
-            on_success(r)
-
-        def _finish_err(e):
-            _cleanup()
-            if on_failure is not None:
-                on_failure(e)
-            else:
-                self._on_error(e)
-
-        self._worker.success.connect(_finish_ok)
-        self._worker.failure.connect(_finish_err)
+        # 接到 self 的 bound method（GUI-thread QObject）→ 跨執行緒自動
+        # QueuedConnection，回呼確定在 GUI thread 執行。
+        self._worker.success.connect(self._on_worker_success)
+        self._worker.failure.connect(self._on_worker_failure)
         self._thread.start()
+
+    def _cleanup_thread(self) -> None:
+        """必須在執行使用者 callback **之前**跑完，否則 callback 內若再
+        觸發 _run_async 會被開頭的 self._thread is not None 擋掉。"""
+        self._busy(False)
+        t, w = self._thread, self._worker
+        self._thread = None
+        self._worker = None
+        if t is not None:
+            t.quit()
+            t.wait()
+            t.deleteLater()
+        if w is not None:
+            w.deleteLater()
+
+    def _on_worker_success(self, result) -> None:
+        ok = self._pending_ok
+        self._pending_ok = self._pending_err = None
+        self._cleanup_thread()
+        if ok is not None:
+            ok(result)
+
+    def _on_worker_failure(self, msg: str) -> None:
+        err = self._pending_err
+        self._pending_ok = self._pending_err = None
+        self._cleanup_thread()
+        if err is not None:
+            err(msg)
+        else:
+            self._on_error(msg)
 
     def _on_error(self, msg: str) -> None:
         first = msg.splitlines()[0]
@@ -613,7 +634,7 @@ class WhitelistWindow(QMainWindow):
             scheme="https" if self.cb_https.isChecked() else "http",
         )
         self._cfg = cfg
-        self.client = VehicleRegisterDBClient(cfg, on_trace=self._log)
+        self.client = VehicleRegisterDBClient(cfg, on_trace=self._bus.log_line.emit)
         self._log(f"[OK] Session 已建立：{cfg.base_url} as {user}")
         self.statusBar().showMessage(f"已連線 — 偵測中…")
 
@@ -646,7 +667,7 @@ class WhitelistWindow(QMainWindow):
             # 沿用同一個 requests.Session，避免 Digest 重新挑戰
             old_session = self.client._session
             self.client = LegacyTrafficListClient(
-                self._cfg, on_trace=self._log, session=old_session
+                self._cfg, on_trace=self._bus.log_line.emit, session=old_session
             )
             self.statusBar().showMessage(f"已連線 — API: {self.client.mode_label}")
             self.on_find_groups()
