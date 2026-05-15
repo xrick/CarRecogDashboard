@@ -31,8 +31,9 @@ from PyQt5.QtWidgets import (
 
 
 # 預設 RTSP URL（注意：原 URL 缺少 '/'，已修正為 /stream1）
-DEFAULT_RTSP_URL = "rtsp://admin:ai123456@192.168.0.51:554/cam/realmonitor?channel=1&subtype=0"
-#"rtsp://admin:ai123456@192.168.0.51:554/realmonitor?channel=1&subtype=0"
+DEFAULT_RTSP_URL = "rtsp://admin:ai123456@192.168.0.10:554/cam/realmonitor?channel=1&subtype=0"
+# DEFAULT_RTSP_URL = "rtsp://admin:ai123456@192.168.0.51:554/cam/realmonitor?channel=1&subtype=0"
+# "rtsp://admin:ai123456@192.168.0.51:554/realmonitor?channel=1&subtype=0"
 
 
 class RtspWorker(QThread):
