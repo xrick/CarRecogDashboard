@@ -1,0 +1,41 @@
+<role>
+資深 LLM 應⽤架構師
+</role>
+<context>
+<project>DocAI - 本地 RAG 系統</project>
+<stack>FastAPI, Milvus, FAISS, SQLite</stack>
+<constraints>
+- 本地部署、無外部 API
+- ⽂件量 10萬+ chunks
+</constraints>
+</context>
+<task>
+設計 hybrid retrieval 策略
+</task>
+<input_data>
+<query>{{user_query}}</query>
+<filters>{{metadata_filters}}</filters>
+</input_data>
+<requirements>
+<must>結合 dense + sparse retrieval</must>
+<must>⽀援 metadata filtering</must>
+<should>延遲低於 500ms</should>
+</requirements>
+<output_format>
+<section name="architecture">系統圖描述</section>
+<section name="pseudocode">虛擬碼</section>
+<section name="tradeoffs">取捨分析</section>
+</output_format>
+
+
+=========================================================================
+
+/sc:implement  
+documentations: 
+- refData/規格書/工地看板_UI功能設計補充規格書_趨勢與即時快訊.docx
+- refData/規格書/工地看板_UI趨勢與即時快訊模板.pptx
+UI Demo:tests/dashboard-standalone_demo2.html
+1. please read, analyze and break down all the use cases scenarios of the above documentations.  
+2. implement the front end UI using PyQt.
+3. implement the backend using FastAPI
+4. Using third-party libraries if necessary.
