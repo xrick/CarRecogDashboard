@@ -66,6 +66,10 @@ class ApiPoller(QThread):
         snap["status"] = self._get("/dashboard/system/status")
         snap["alerts"] = self._get(f"/dashboard/sites/{site}/alerts")
         snap["copilot"] = self._get(f"/dashboard/sites/{site}/copilot")
+        try:
+            snap["cameras"] = self._get(f"/dashboard/sites/{site}/cameras")
+        except Exception:
+            snap["cameras"] = []
         return snap
 
     def run(self) -> None:

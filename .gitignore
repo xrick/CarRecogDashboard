@@ -1,0 +1,5 @@
+
+# local camera credentials — keep the example, not the real one
+config/cameras.json
+data/siteboard.db*
+data/snapshots/

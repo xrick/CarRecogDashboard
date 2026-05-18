@@ -3,7 +3,7 @@
 </role>
 <context>
 <project>DocAI - 本地 RAG 系統</project>
-<stack>FastAPI, Milvus, FAISS, SQLite</stack>
+<stack>FastAPI, PyQt</stack>
 <constraints>
 - 本地部署、無外部 API
 - ⽂件量 10萬+ chunks
@@ -27,15 +27,8 @@
 <section name="tradeoffs">取捨分析</section>
 </output_format>
 
+===============================================================================
 
-=========================================================================
-
-/sc:implement  
-documentations: 
-- refData/規格書/工地看板_UI功能設計補充規格書_趨勢與即時快訊.docx
-- refData/規格書/工地看板_UI趨勢與即時快訊模板.pptx
-UI Demo:tests/dashboard-standalone_demo2.html
-1. please read, analyze and break down all the use cases scenarios of the above documentations.  
-2. implement the front end UI using PyQt.
-3. implement the backend using FastAPI
-4. Using third-party libraries if necessary.
+/sc:brainstorm 
+接下來解決這個專案最最最重要的功能：儲存白/黑名單清單（記憶體 → 重啟即失，影響事件分類正確性）— 最高優先。
+我的想法是只要記憶體中黑、白名單有變動，立即寫回或修改sqlite，因此，我們需要讀取"manuals/main/中性简体_HTTP_API_协议规范V3.87.pdf"，找尋是否已有存在的API能解決將黑、白名單寫回資料庫的這個問題

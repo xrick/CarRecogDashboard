@@ -1,0 +1,3 @@
+# runtime artifacts — the SQLite DB and camera snapshots are generated
+*
+!.gitignore

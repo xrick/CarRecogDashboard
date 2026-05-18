@@ -1,0 +1,32 @@
+{
+  "_comment": "Copy to config/cameras.json and edit. Remove all cameras (or set simulate:true) to run the demo simulator. Each site can have an entry + exit ANPR camera and a face camera; role decides IN/OUT, kind picks the subscribed event codes (中性 HTTP API V3.87 §4.4.3).",
+  "db_path": "data/siteboard.db",
+  "poll_interval": 60,
+  "simulate": false,
+  "sites": [
+    {
+      "site_id": "A03",
+      "site_name": "A03 機電棟工區",
+      "cameras": [
+        {
+          "host": "192.168.0.80",
+          "username": "admin",
+          "password": "ai123456",
+          "scheme": "http",
+          "channel": 1,
+          "role": "entry",
+          "kind": "both"
+        },
+        {
+          "host": "192.168.0.108",
+          "username": "admin",
+          "password": "ai123456",
+          "scheme": "http",
+          "channel": 1,
+          "role": "exit",
+          "kind": "anpr"
+        }
+      ]
+    }
+  ]
+}

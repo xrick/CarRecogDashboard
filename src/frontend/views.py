@@ -392,7 +392,10 @@ class AlertView(_BaseView):
         self._root.addWidget(panel, 1)
 
 
+from .rtsp_panel import RtspView  # noqa: E402  (kept separate: lazy cv2)
+
 VIEW_CLASSES = {
     "overview": OverviewView, "site": SiteBoardView, "vehicle": VehicleView,
     "personnel": PersonnelView, "trend": TrendView, "alert": AlertView,
+    "cctv": RtspView,
 }

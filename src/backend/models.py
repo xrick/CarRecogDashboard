@@ -168,6 +168,18 @@ class Alert(BaseModel):
     occurrence_count: int = 1
 
 
+class CameraStream(BaseModel):
+    """RTSP stream descriptor for the 現場影像 panel (spec §4.1.1)."""
+    site_id: str
+    site_name: str
+    host: str
+    channel: int
+    subtype: int
+    role: str
+    kind: str
+    rtsp_url: str
+
+
 class CopilotSummary(BaseModel):
     """AI 副駕駛摘要 (異常事件牆 / 總覽上方)。"""
     headline: str

@@ -7,5 +7,10 @@ fastapi==0.136.1
 uvicorn[standard]==0.47.0
 pydantic==2.13.4
 
-# Frontend networking (REST poll + SSE stream) — already in the venv
+# Frontend networking + camera client (REST poll, SSE, Digest auth,
+# snapManager multipart stream) — already in the venv
 requests==2.34.0
+urllib3==2.7.0
+
+# Persistence: SQLite via the Python stdlib `sqlite3` — no extra dependency.
+

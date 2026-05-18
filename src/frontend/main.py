@@ -35,9 +35,10 @@ MAIN_TABS = [("dashboard", "工地看板", False), ("reserved1", "人員管理",
              ("reserved2", "車輛管理", True), ("reserved3", "系統設定", True)]
 SUB_TABS = [("overview", "全工地總覽", "1"), ("site", "單一工地", "2"),
             ("vehicle", "車輛看板", "3"), ("personnel", "人員看板", "4"),
-            ("trend", "趨勢全螢幕", "5"), ("alert", "異常事件牆", "6")]
+            ("trend", "趨勢全螢幕", "5"), ("alert", "異常事件牆", "6"),
+            ("cctv", "現場影像", "7")]
 ROTATION = {"overview": 30, "site": 30, "vehicle": 20, "personnel": 20,
-            "trend": 30, "alert": 20}
+            "trend": 30, "alert": 20, "cctv": 30}
 ROTATION_ORDER = ["overview", "site", "vehicle", "personnel"]
 
 
