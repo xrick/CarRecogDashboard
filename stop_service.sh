@@ -26,13 +26,19 @@ stop_pid() {
 stop_pid "前端看板" "$RUN_DIR/frontend.pid"
 stop_pid "後端 API" "$RUN_DIR/backend.pid"
 
-# fallback：清掉可能殘留的孤兒程序（精確 pattern，不會誤殺本腳本）
-for pat in "uvicorn src.backend.app:app" "python -m src.frontend.main"; do
-  if pgrep -f "$pat" >/dev/null 2>&1; then
+# fallback：清掉可能殘留的孤兒程序。
+# 用 venv 路徑前綴的精確 pattern，並以 PID 逐一處理且排除本腳本自身，
+# 避免誤殺「指令列剛好含此字串」的其他 shell。
+SELF=$$
+for pat in "bin/uvicorn src.backend.app:app" "bin/python -m src.frontend.main"; do
+  pids="$(pgrep -f "$pat" 2>/dev/null | grep -vx "$SELF" || true)"
+  if [[ -n "$pids" ]]; then
     echo "▶ 清理殘留：$pat"
-    pkill -TERM -f "$pat" 2>/dev/null || true
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
     sleep 1
-    pkill -KILL -f "$pat" 2>/dev/null || true
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || true
   fi
 done
 
