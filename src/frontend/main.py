@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .api_client import ApiPoller, EventStream
+from .api_client import ACTION_BUS, ApiPoller, EventStream
 from .theme import COLORS, base_font, init_fonts
 from .views import VIEW_CLASSES
 from .widgets import FlashCard, _lbl
@@ -207,6 +207,8 @@ class MainWindow(QWidget):
         self.stream = EventStream()
         self.stream.new_event.connect(self._on_event)
         self.stream.start()
+        # 人工拍板成功 -> 立即重新輪詢，已 resolved 的告警卡隨即消失
+        ACTION_BUS.changed.connect(self.poller.request_refresh)
 
     def _wire_timers(self):
         self._tick = QTimer(self)

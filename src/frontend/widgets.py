@@ -83,6 +83,7 @@ class StatusBadge(QLabel):
         "whitelist": ("pass", 0.15), "pass": ("pass", 0.15),
         "stranger": ("stranger", 0.15), "alert": ("alert", 0.18),
         "blacklist": ("alert", 0.18),
+        "pending": ("textMuted", 0.18),   # 名單未同步(系統安裝中) — neutral grey
     }
 
     def __init__(self, status_type, text, parent=None):
@@ -327,10 +328,14 @@ class AlertCard(QFrame):
     _META = {
         "blacklist": ("alert", "黑名單車牌"), "expired": ("alert", "證照過期"),
         "stranger": ("stranger", "陌生車牌"), "api_delay": ("stranger", "資料延遲"),
+        "list_stale": ("stranger", "名單過期/未同步"),
     }
+    _ICON = {"api_delay": "API", "list_stale": "名單"}
 
     def __init__(self, a: dict, parent=None):
         super().__init__(parent)
+        self._aid = a.get("id", "")
+        self._site = a.get("site", "ALL")
         ck, label = self._META.get(a.get("type"), ("alert", "異常"))
         self.setStyleSheet(
             f"QFrame#card{{background:{rgba(ck, 0.08)};"
@@ -353,7 +358,7 @@ class AlertCard(QFrame):
             v.addWidget(FaceSnapshot(a.get("target", "?")[:1], 70, alert=True),
                         0, Qt.AlignHCenter)
         else:
-            api = _lbl("API", ck, 24, bold=True)
+            api = _lbl(self._ICON.get(a.get("type"), "⚠"), ck, 24, bold=True)
             api.setAlignment(Qt.AlignCenter)
             api.setFixedHeight(80)
             api.setStyleSheet(
@@ -429,10 +434,23 @@ class AlertCard(QFrame):
             f"QPushButton{{background:transparent;color:{_HEX['textDim']};"
             f"border:1px solid {_HEX['borderLight']};padding:6px 0;"
             f"border-radius:4px;}}")
+        adopt.clicked.connect(lambda: self._resolve("adopted", adopt, fp))
+        fp.clicked.connect(lambda: self._resolve("false_positive", adopt, fp))
         btns.addWidget(adopt, 2)
         btns.addWidget(fp, 1)
         v.addLayout(btns)
         v.addStretch(1)
+
+    def _resolve(self, resolution: str, adopt, fp) -> None:
+        """人工拍板 (spec §5): POST resolve on a QThread, then disable the
+        buttons. ACTION_BUS triggers a board refresh so the card drops out
+        (db.alerts filters resolved=0)."""
+        from .api_client import resolve_alert_async
+        for b in (adopt, fp):
+            b.setEnabled(False)
+        adopt.setText("已採納處理" if resolution == "adopted" else "已採納")
+        fp.setText("已標記誤判" if resolution == "false_positive" else "誤判")
+        resolve_alert_async(self._site, self._aid, resolution)
 
 
 class SiteCard(QFrame):
@@ -478,6 +496,9 @@ class FlashCard(QFrame):
     def __init__(self, ev: dict, parent=None):
         super().__init__(parent)
         self._id = ev.get("event_id", "")
+        # alert row derived from this event in ingest._emit is "al_<event_id>"
+        self._aid = f"al_{ev.get('event_id', '')}"
+        self._site = ev.get("site_id", "ALL")
         is_v = ev.get("event_type") == "vehicle"
         is_alert = ev.get("status_type") in ("alert", "blacklist")
         accent = "alert" if is_alert else ("vehicleIn" if is_v else "in")
@@ -554,9 +575,20 @@ class FlashCard(QFrame):
                 f"QPushButton{{background:transparent;color:{_HEX['textDim']};"
                 f"border:1px solid {_HEX['borderLight']};padding:6px 0;"
                 f"border-radius:4px;}}")
+            b1.clicked.connect(lambda: self._ack("adopted", b1, b2))
+            b2.clicked.connect(lambda: self._ack("false_positive", b1, b2))
             ack.addWidget(b1, 1)
             ack.addWidget(b2, 1)
             v.addLayout(ack)
 
         QTimer.singleShot(8000 if is_alert else 5000,
                           lambda: self.closed.emit(self._id))
+
+    def _ack(self, resolution: str, b1, b2) -> None:
+        """人工拍板 from the flash card (spec §5): resolve the derived
+        alert, then dismiss the card."""
+        from .api_client import resolve_alert_async
+        for b in (b1, b2):
+            b.setEnabled(False)
+        resolve_alert_async(self._site, self._aid, resolution)
+        self.closed.emit(self._id)

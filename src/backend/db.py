@@ -70,8 +70,21 @@ CREATE TABLE IF NOT EXISTS alert (
     occurrence       TEXT NOT NULL DEFAULT '',
     occurrence_count INTEGER NOT NULL DEFAULT 1,
     resolved         INTEGER NOT NULL DEFAULT 0,
+    resolution       TEXT,                       -- adopted|false_positive|auto
+    resolved_by      TEXT,                       -- operator id (human-in-the-loop)
+    resolved_at      TEXT,
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS alert_action (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id  TEXT NOT NULL,
+    action    TEXT NOT NULL,                     -- resolve
+    resolution TEXT NOT NULL,                    -- adopted|false_positive|auto
+    actor     TEXT NOT NULL DEFAULT 'operator',
+    note      TEXT NOT NULL DEFAULT '',
+    ts        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_alert_action_aid ON alert_action(alert_id);
 CREATE TABLE IF NOT EXISTS alert_suggestion (
     alert_id TEXT NOT NULL,
     seq      INTEGER NOT NULL,
@@ -130,7 +143,17 @@ def connect(db_path: str) -> None:
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA synchronous=NORMAL")
         _conn.executescript(_SCHEMA)
+        _migrate()
         _conn.commit()
+
+
+def _migrate() -> None:
+    """Add columns introduced after a DB was first created (CREATE TABLE IF
+    NOT EXISTS won't alter existing tables). Idempotent."""
+    cols = {r["name"] for r in _conn.execute("PRAGMA table_info(alert)")}
+    for col in ("resolution TEXT", "resolved_by TEXT", "resolved_at TEXT"):
+        if col.split()[0] not in cols:
+            _conn.execute(f"ALTER TABLE alert ADD COLUMN {col}")
 
 
 def close() -> None:
@@ -445,3 +468,170 @@ def system_status() -> dict:
 def event_count() -> int:
     with _lock:
         return _c().execute("SELECT COUNT(*) c FROM event").fetchone()["c"]
+
+
+def resolve_alert(alert_id: str, *, resolution: str = "auto",
+                  actor: str = "system", note: str = "") -> bool:
+    """Mark an alert resolved (alerts() filters resolved=0) and write an
+    immutable alert_action audit row (spec §5 human-in-the-loop).
+
+    Back-compatible: no kwargs -> 'auto' (used by ingest._eval_list_state when
+    a list_stale alert self-clears). Human path passes resolution=
+    'adopted'|'false_positive', actor=<operator>. Returns True if an alert
+    row was actually updated."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _lock:
+        cur = _c().execute(
+            "UPDATE alert SET resolved=1, resolution=?, resolved_by=?, "
+            "resolved_at=? WHERE alert_id=? AND resolved=0",
+            (resolution, actor, ts, alert_id))
+        changed = cur.rowcount > 0
+        if changed:  # only audit a real transition (no per-poll auto spam)
+            _c().execute(
+                "INSERT INTO alert_action(alert_id,action,resolution,actor,"
+                "note,ts) VALUES(?,?,?,?,?,?)",
+                (alert_id, "resolve", resolution, actor, note[:500], ts))
+        _c().commit()
+        return changed
+
+
+def alert_actions(alert_id: Optional[str] = None) -> list[dict]:
+    """Audit trail of human/system resolutions (newest first)."""
+    with _lock:
+        if alert_id is None:
+            rows = _c().execute(
+                "SELECT * FROM alert_action ORDER BY id DESC LIMIT 200"
+            ).fetchall()
+        else:
+            rows = _c().execute(
+                "SELECT * FROM alert_action WHERE alert_id=? ORDER BY id DESC",
+                (alert_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# Plate-list mirror (read-only cache of camera TrafficRedList/BlackList)
+# spec: claudedocs/DESIGN_plate_list_persistence.md
+# red = 白名單 (TrafficRedList) | black = 黑名單 (TrafficBlackList)
+# --------------------------------------------------------------------------- #
+_STATE_RANK = {"fresh": 0, "stale": 1, "unsynced": 2}
+
+
+def _plate_hash(plates: set[str]) -> str:
+    return hashlib.sha1("\n".join(sorted(plates)).encode("utf-8")).hexdigest()
+
+
+def plate_list_replace(host: str, list_type: str, plates: set[str], *,
+                       sync_ts: str) -> bool:
+    """Successful NON-EMPTY fetch. Diff by snapshot hash; replace rows + bump
+    last_change_ts only when content changed (FR-2/FR-3). Always refreshes
+    last_success_ts (trustworthy confirmation). Atomic (NFR-3). Returns
+    True iff content changed."""
+    h = _plate_hash(plates)
+    with _lock:
+        cur = _c()
+        m = cur.execute(
+            "SELECT snapshot_hash,last_change_ts FROM plate_list_meta "
+            "WHERE host=? AND list_type=?", (host, list_type)).fetchone()
+        changed = (m is None) or (m["snapshot_hash"] != h)
+        if changed:
+            cur.execute("DELETE FROM plate_list WHERE host=? AND list_type=?",
+                        (host, list_type))
+            cur.executemany(
+                "INSERT OR IGNORE INTO plate_list(host,list_type,plate) "
+                "VALUES(?,?,?)", [(host, list_type, p) for p in plates])
+        change_ts = sync_ts if changed else (m["last_change_ts"] if m else sync_ts)
+        cur.execute(
+            "INSERT OR REPLACE INTO plate_list_meta(host,list_type,snapshot_hash,"
+            "plate_count,last_success_ts,last_change_ts,last_attempt_ts,"
+            "last_status) VALUES(?,?,?,?,?,?,?, 'fresh')",
+            (host, list_type, h, len(plates), sync_ts, change_ts, sync_ts))
+        cur.commit()
+        return changed
+
+
+def plate_list_touch(host: str, list_type: str, *, success: bool,
+                     sync_ts: str) -> None:
+    """found=0 or fetch failure. NEVER deletes plate rows (D4). Updates only
+    last_attempt_ts; does NOT refresh last_success_ts, so a kept snapshot ages
+    toward 'stale' (FR-4/FR-5/FR-11). ``success`` (camera contacted but empty)
+    only adjusts the cached last_status hint."""
+    with _lock:
+        cur = _c()
+        m = cur.execute(
+            "SELECT last_success_ts FROM plate_list_meta "
+            "WHERE host=? AND list_type=?", (host, list_type)).fetchone()
+        if m is None:
+            cur.execute(
+                "INSERT INTO plate_list_meta(host,list_type,snapshot_hash,"
+                "plate_count,last_success_ts,last_change_ts,last_attempt_ts,"
+                "last_status) VALUES(?,?,?,?,?,?,?, 'unsynced')",
+                (host, list_type, None, 0, None, None, sync_ts))
+        else:
+            hint = "unsynced" if not m["last_success_ts"] else "stale"
+            cur.execute(
+                "UPDATE plate_list_meta SET last_attempt_ts=?, last_status=? "
+                "WHERE host=? AND list_type=?",
+                (sync_ts, hint, host, list_type))
+        cur.commit()
+
+
+def plate_list_get(host: str, list_type: str) -> set[str]:
+    with _lock:
+        return {r["plate"] for r in _c().execute(
+            "SELECT plate FROM plate_list WHERE host=? AND list_type=?",
+            (host, list_type))}
+
+
+def plate_list_load_all() -> dict[str, dict[str, set]]:
+    """{host: {'red': {...}, 'black': {...}}} — for ingest startup hydrate."""
+    out: dict[str, dict[str, set]] = {}
+    with _lock:
+        for r in _c().execute(
+                "SELECT host,list_type,plate FROM plate_list"):
+            d = out.setdefault(r["host"], {"red": set(), "black": set()})
+            d.setdefault(r["list_type"], set()).add(r["plate"])
+    return out
+
+
+def plate_list_meta(host: Optional[str] = None) -> list[dict]:
+    with _lock:
+        if host is None:
+            rows = _c().execute("SELECT * FROM plate_list_meta").fetchall()
+        else:
+            rows = _c().execute(
+                "SELECT * FROM plate_list_meta WHERE host=?", (host,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def plate_list_state(host: str, *, stale_seconds: int, now_ts: str) -> str:
+    """Host-level state = worst of its red/black lists
+    (unsynced > stale > fresh). Missing meta / no successful sync -> unsynced."""
+    metas = plate_list_meta(host)
+    if not metas or not {"red", "black"}.issubset(
+            {m["list_type"] for m in metas}):
+        # no meta at all, or a list_type never attempted -> not yet synced
+        if not metas:
+            return "unsynced"
+    try:
+        now = datetime.strptime(now_ts, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        now = datetime.now()
+    worst = "fresh"
+    have = {m["list_type"] for m in metas}
+    if not {"red", "black"}.issubset(have):
+        worst = "unsynced"
+    for m in metas:
+        ls = m["last_success_ts"]
+        if not ls:
+            st = "unsynced"
+        else:
+            try:
+                age = (now - datetime.strptime(
+                    ls, "%Y-%m-%d %H:%M:%S")).total_seconds()
+                st = "stale" if age > stale_seconds else "fresh"
+            except ValueError:
+                st = "fresh"
+        if _STATE_RANK[st] > _STATE_RANK[worst]:
+            worst = st
+    return worst

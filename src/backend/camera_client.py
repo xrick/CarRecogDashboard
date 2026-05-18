@@ -126,6 +126,17 @@ class _Part:
     body: bytes
 
 
+@dataclass
+class PlateListResult:
+    """Outcome of one allow/deny-list fetch. Lets the ingest layer apply the
+    D4 decision matrix: ok+plates -> replace; ok+empty (found=0) -> keep;
+    not ok -> keep (spec: DESIGN_plate_list_persistence.md §2)."""
+    ok: bool                       # True only on HTTP 2xx + parsed (incl found=0)
+    plates: set                    # plate strings (may be empty when ok)
+    http_status: Optional[int] = None
+    reason: str = ""               # failure detail (log / alert)
+
+
 class CameraClient:
     def __init__(self, cfg: CameraConfig):
         self.cfg = cfg
@@ -144,8 +155,14 @@ class CameraClient:
         return parse_kv(r.text)
 
     # ---- allow / deny list (§10.3.4, fallback §10.7.8) -----------------
-    def find_plate_list(self, name: str) -> set[str]:
-        """name = 'TrafficRedList' (白) | 'TrafficBlackList' (黑)."""
+    def find_plate_list(self, name: str) -> PlateListResult:
+        """name = 'TrafficRedList' (白) | 'TrafficBlackList' (黑).
+
+        Returns a PlateListResult so the caller can tell apart
+        success-with-plates / success-but-empty (found=0) / failure — the
+        three branches of the D4 decision matrix. ``found=N`` with no
+        ``records`` (verified real behaviour on XC-204BLPR @.10) is a
+        legitimate ok+empty result, NOT a failure."""
         try:
             r = self.s.get(f"{self.cfg.base_url}/cgi-bin/recordFinder.cgi",
                             params={"action": "find", "name": name,
@@ -153,12 +170,23 @@ class CameraClient:
                             timeout=self.cfg.timeout)
             if r.status_code < 400:
                 data = parse_kv(r.text)
-                recs = data.get("records", [])
-                return {rec.get("PlateNumber", "").strip()
-                        for rec in recs if rec.get("PlateNumber")}
-        except requests.RequestException:
-            pass
-        return self._vehicle_register_plates()  # §10.7 fallback
+                recs = data.get("records", []) or []
+                plates = {rec.get("PlateNumber", "").strip()
+                          for rec in recs if rec.get("PlateNumber")}
+                return PlateListResult(ok=True, plates=plates,
+                                       http_status=r.status_code)
+            # recordFinder unsupported on this model -> §10.7 fallback
+            fb = self._vehicle_register_plates()
+            if fb:
+                return PlateListResult(ok=True, plates=fb,
+                                       http_status=r.status_code,
+                                       reason="VehicleRegisterDB fallback")
+            return PlateListResult(ok=False, plates=set(),
+                                   http_status=r.status_code,
+                                   reason=f"recordFinder HTTP {r.status_code}")
+        except requests.RequestException as e:
+            return PlateListResult(ok=False, plates=set(), http_status=None,
+                                   reason=f"{type(e).__name__}: {str(e)[:120]}")
 
     def _vehicle_register_plates(self) -> set[str]:
         """§10.7 VehicleRegisterDB fallback: findGroup -> startFind/doFind."""
@@ -297,8 +325,14 @@ def _direction(role: str) -> str:
 def normalize_traffic(raw: dict, *, site_id: str, site_name: str,
                       role: str, redlist: set[str], blacklist: set[str],
                       now_iso: str, now_hms: str,
+                      list_state: str = "fresh",
                       snapshot_url: Optional[str] = None) -> Optional[dict]:
-    """TrafficJunction (§10.1.1) Events[i] -> board Event."""
+    """TrafficJunction (§10.1.1) Events[i] -> board Event.
+
+    ``list_state`` (fresh|stale|unsynced) drives the unmatched-plate label:
+    when the host's lists were never synced (unsynced, e.g. fresh deploy /
+    camera unreachable) an unknown plate is 'pending' 名單未同步（系統安裝中）,
+    NOT 'stranger' (FR-10 / D5)."""
     tc = raw.get("TrafficCar", {}) or {}
     veh = raw.get("Vehicle", {}) or {}
     plate = (tc.get("PlateNumber") or "").strip()
@@ -310,6 +344,9 @@ def normalize_traffic(raw: dict, *, site_id: str, site_name: str,
     elif plate in redlist:
         status, stype = "白名單", "whitelist"
         access = "閘門已開啟"
+    elif list_state == "unsynced":
+        status, stype = "名單未同步", "pending"
+        access = "系統安裝中"
     else:
         status, stype = "陌生", "stranger"
         access = "人工確認"

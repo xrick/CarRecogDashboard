@@ -25,8 +25,9 @@ from .config import load_config
 from .ingest import SNAPSHOT_DIR, Hub, IngestManager
 from .mock_data import SITES
 from .models import (
-    Alert, CameraStream, CopilotSummary, Event, HourlyTrendResponse,
-    SiteSummary, SitesSummaryResponse, SystemStatus,
+    Alert, AlertResolveRequest, AlertResolveResponse, CameraStream,
+    CopilotSummary, Event, HourlyTrendResponse, SiteSummary,
+    SitesSummaryResponse, SystemStatus,
 )
 
 hub = Hub()
@@ -114,6 +115,23 @@ def system_status() -> dict:
 def site_alerts(site_id: str) -> list[dict]:
     _check(site_id)
     return db.alerts(site_id)
+
+
+@app.post("/dashboard/sites/{site_id}/alerts/{alert_id}/resolve",
+          response_model=AlertResolveResponse, tags=["board"])
+def resolve_alert(site_id: str, alert_id: str,
+                  req: AlertResolveRequest) -> dict:
+    """人工拍板 — 確認告警 / 標記誤判 (spec §5)。看板端唯一允許的寫入動作:
+    只落 alert.resolved + alert_action 稽核，不回寫相機/名單 (規格 §10)。"""
+    _check(site_id)
+    changed = db.resolve_alert(alert_id, resolution=req.resolution.value,
+                               actor=req.actor or "operator", note=req.note)
+    if not changed:
+        # already resolved or unknown id — idempotent, not an error
+        return AlertResolveResponse(alert_id=alert_id, resolved=False,
+                                    resolution=req.resolution.value).model_dump()
+    return AlertResolveResponse(alert_id=alert_id, resolved=True,
+                                resolution=req.resolution.value).model_dump()
 
 
 @app.get("/dashboard/sites/{site_id}/copilot", response_model=CopilotSummary,

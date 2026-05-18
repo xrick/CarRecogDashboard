@@ -30,6 +30,7 @@ class StatusType(str, Enum):
     stranger = "stranger"     # 陌生    -> yellow
     alert = "alert"           # 告警/證照過期 -> red
     blacklist = "blacklist"   # 黑名單  -> red
+    pending = "pending"       # 名單未同步(系統安裝中) -> grey (FR-10/D5)
 
 
 class AccessResult(str, Enum):
@@ -166,6 +167,25 @@ class Alert(BaseModel):
     suggestions: list[str] = []
     occurrence: str = ""
     occurrence_count: int = 1
+
+
+class AlertResolution(str, Enum):
+    adopted = "adopted"               # 採納並處理 / 確認告警
+    false_positive = "false_positive"  # 標記為誤判
+
+
+class AlertResolveRequest(BaseModel):
+    """人工拍板 (spec §5 human-in-the-loop)。看板端唯一允許的『寫入』動作 —
+    僅記錄處置決策，不回寫相機/名單 (規格 §10)。"""
+    resolution: AlertResolution
+    actor: str = Field("operator", max_length=64)
+    note: str = Field("", max_length=500)
+
+
+class AlertResolveResponse(BaseModel):
+    alert_id: str
+    resolved: bool
+    resolution: str
 
 
 class CameraStream(BaseModel):

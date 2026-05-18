@@ -100,6 +100,15 @@ class IngestManager:
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         self.hub.bind_loop(loop)
         seed_database()
+        # FR-1/FR-6: hydrate the in-memory list cache from SQLite BEFORE any
+        # camera thread starts, so classification survives a restart with no
+        # cold-start "陌生" window.
+        try:
+            self._lists = {
+                h: (d.get("red", set()), d.get("black", set()))
+                for h, d in db.plate_list_load_all().items()}
+        except Exception:
+            self._lists = {}
         if self.cfg.simulate or not self.cfg.all_cameras:
             db.set_api_totals(1, 1)
             self._periodic = loop.create_task(self._simulate_loop())
@@ -146,7 +155,7 @@ class IngestManager:
         while not self._stop.is_set():
             try:
                 client.get_system_info()  # auth + reachability (§4.6.39)
-                self._refresh_lists(client, cam.host)
+                self._refresh_lists(client, site, cam.host)
                 backoff = 1.0
                 for ev in client.stream_events():
                     if self._stop.is_set():
@@ -171,13 +180,56 @@ class IngestManager:
                 time.sleep(min(backoff, 15.0))
                 backoff = min(backoff * 2, 15.0)
 
-    def _refresh_lists(self, client: CameraClient, host: str) -> None:
+    def _refresh_lists(self, client: CameraClient, site, host: str) -> None:
+        """D4 decision matrix per list_type, then re-evaluate staleness.
+        spec: claudedocs/DESIGN_plate_list_persistence.md §2/§5.2."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
-            red = client.find_plate_list("TrafficRedList")
-            black = client.find_plate_list("TrafficBlackList")
-            self._lists[host] = (red, black)
+            for lt, name in (("red", "TrafficRedList"),
+                             ("black", "TrafficBlackList")):
+                res = client.find_plate_list(name)
+                if res.ok and res.plates:
+                    db.plate_list_replace(host, lt, res.plates, sync_ts=now)
+                else:
+                    # ok+empty (found=0) OR failure -> KEEP, meta-only (D4)
+                    db.plate_list_touch(host, lt, success=res.ok, sync_ts=now)
+            # cache := authoritative DB snapshot (kept on found=0/failure)
+            self._lists[host] = (db.plate_list_get(host, "red"),
+                                 db.plate_list_get(host, "black"))
+            self._eval_list_state(site, host)
         except Exception:
             self._lists.setdefault(host, (set(), set()))
+
+    def _eval_list_state(self, site, host: str) -> None:
+        """Raise / auto-clear the list_stale alert (FR-11 / D6)."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        aid = f"liststale_{host}"
+        try:
+            state = db.plate_list_state(
+                host, stale_seconds=self.cfg.effective_stale_seconds,
+                now_ts=now)
+            if state in ("stale", "unsynced"):
+                last = next((m["last_success_ts"]
+                             for m in db.plate_list_meta(host)
+                             if m.get("last_success_ts")), None)
+                label = "名單過期" if state == "stale" else "名單未同步"
+                db.insert_alert(dict(
+                    id=aid, type="list_stale",
+                    target=f"{site.site_name} · {host}",
+                    detail=(f"{label} · 最後同步 {last}" if last
+                            else f"{label} · 尚未同步（系統安裝中）"),
+                    site=site.site_id, confidence=None,
+                    why=("名單距最後成功同步超過門檻" if state == "stale"
+                         else "尚未取得任何名單快照"),
+                    cost={"fp": "以舊名單放行/攔阻可能誤判",
+                          "fn": "名單過期 → 白/黑名單分類失準"},
+                    suggestions=["檢查相機 recordFinder / 連線",
+                                 "確認名單已於相機建檔", "通知 IT 排查"],
+                    occurrence="名單監測", occurrence_count=1))
+            else:
+                db.resolve_alert(aid)  # back to fresh -> clear the card
+        except Exception:
+            pass
 
     def _handle_event(self, site, cam, ev: dict, client: CameraClient) -> None:
         code = ev.get("code", "")
@@ -190,12 +242,18 @@ class IngestManager:
         red, black = self._lists.get(cam.host, (set(), set()))
         now = datetime.now()
         iso, hms = now.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%H:%M:%S")
+        try:
+            list_state = db.plate_list_state(
+                cam.host, stale_seconds=self.cfg.effective_stale_seconds,
+                now_ts=iso)
+        except Exception:
+            list_state = "fresh"
         norm = None
         if code == "TrafficJunction":
             norm = normalize_traffic(
                 data, site_id=site.site_id, site_name=site.site_name,
                 role=cam.role, redlist=red, blacklist=black,
-                now_iso=iso, now_hms=hms)
+                now_iso=iso, now_hms=hms, list_state=list_state)
         elif code == "FaceRecognition":
             norm = normalize_face(
                 data, site_id=site.site_id, site_name=site.site_name,
@@ -248,6 +306,8 @@ class IngestManager:
                     online += 1
                 except Exception:
                     self._mark_offline(site, cam, "週期健康檢查失敗")
+                # FR-11: age lists toward stale even with no new events
+                self._eval_list_state(site, cam.host)
             total = max(len(self.cfg.all_cameras), 1)
             db.set_api_totals(online, total)
             db.record_status(dict(

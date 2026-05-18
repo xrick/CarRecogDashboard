@@ -19,7 +19,7 @@ import os
 import threading
 
 import requests
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 API_BASE = os.environ.get("CARDASH_API", "http://127.0.0.1:8000").rstrip("/")
 
@@ -141,3 +141,64 @@ class EventStream(QThread):
             self.new_event.emit(json.loads(payload))
         except (ValueError, TypeError):
             pass
+
+
+# --------------------------------------------------------------------------- #
+# Human-in-the-loop: 人工拍板 (spec §5). The board's ONLY write call.
+# --------------------------------------------------------------------------- #
+class _ActionBus(QObject):
+    """Signals a board-side action succeeded so the window can refetch
+    (resolved alerts then drop out via the resolved=0 filter)."""
+    changed = pyqtSignal()
+
+
+ACTION_BUS = _ActionBus()
+
+
+class _ResolveWorker(QThread):
+    done = pyqtSignal(bool)  # ok?
+
+    def __init__(self, site_id: str, alert_id: str, resolution: str,
+                 note: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self._args = (site_id, alert_id, resolution, note)
+
+    def run(self) -> None:
+        site_id, alert_id, resolution, note = self._args
+        ok = False
+        try:
+            r = requests.post(
+                f"{API_BASE}/dashboard/sites/{site_id}/alerts/{alert_id}"
+                f"/resolve",
+                json={"resolution": resolution, "actor": "operator",
+                      "note": note},
+                timeout=6)
+            ok = r.status_code < 400
+        except requests.RequestException:
+            ok = False
+        if ok:
+            ACTION_BUS.changed.emit()
+        self.done.emit(ok)
+
+
+_workers: list[_ResolveWorker] = []  # keep refs so QThreads aren't GC'd
+
+
+def resolve_alert_async(site_id: str, alert_id: str, resolution: str,
+                        note: str = "", on_done=None) -> None:
+    """Fire-and-forget POST on a QThread (repo convention: never block the
+    GUI on requests). ``resolution`` = 'adopted' | 'false_positive'."""
+    w = _ResolveWorker(site_id or "ALL", alert_id, resolution, note)
+
+    def _finish(ok: bool) -> None:
+        if on_done is not None:
+            try:
+                on_done(ok)
+            except Exception:
+                pass
+        if w in _workers:
+            _workers.remove(w)
+
+    w.done.connect(_finish)
+    _workers.append(w)
+    w.start()

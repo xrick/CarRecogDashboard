@@ -77,10 +77,16 @@ class AppConfig:
     db_path: str = DB_PATH
     poll_interval: int = 60         # spec §2 備援輪詢 (status / redlist refresh)
     simulate: bool = True
+    # 名單過期門檻 (秒)。0 -> 執行期取 max(120, 2*poll_interval) (REQ R-1)
+    plate_list_stale_seconds: int = 0
 
     @property
     def all_cameras(self) -> list[tuple[SiteConfig, CameraConfig]]:
         return [(s, c) for s in self.sites for c in s.cameras]
+
+    @property
+    def effective_stale_seconds(self) -> int:
+        return self.plate_list_stale_seconds or max(120, 2 * self.poll_interval)
 
 
 def load_config(path: str | None = None) -> AppConfig:
@@ -100,4 +106,5 @@ def load_config(path: str | None = None) -> AppConfig:
         db_path=raw.get("db_path", DB_PATH),
         poll_interval=int(raw.get("poll_interval", 60)),
         simulate=raw.get("simulate", not has_cam),
+        plate_list_stale_seconds=int(raw.get("plate_list_stale_seconds", 0)),
     )
