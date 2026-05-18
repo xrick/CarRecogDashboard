@@ -3,3 +3,7 @@
 config/cameras.json
 data/siteboard.db*
 data/snapshots/
+
+# Python bytecode
+__pycache__/
+*.pyc

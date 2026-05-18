@@ -23,7 +23,7 @@ from .charts import HourlyChart
 from .theme import COLORS, base_font
 from .widgets import (
     AICopilotSummary, AlertCard, EventRow, KpiCard, Panel,
-    PersonnelDetailRow, PlateSnapshot, SectionTitle, SiteCard,
+    PersonnelDetailRow, PlateSnapshot, SectionTitle, SiteCard, SnapshotImage,
     StatusBadge, VehicleDetailRow, VehicleSnapshot, FaceSnapshot, _lbl,
 )
 
@@ -160,7 +160,7 @@ class SiteBoardView(_BaseView):
             ("車輛離場", "vehicle_out", "vehicleOut", "今日累計車次"),
             ("車輛在場", "vehicle_inside", "stranger", "車輛即時在場"),
         ):
-            kpi.addWidget(KpiCard(lab, k.get(key, 0), sub, ck))
+            kpi.addWidget(KpiCard(lab, k.get(key, 0), sub, ck, large=True))
         self._root.addLayout(kpi)
 
         mid = QHBoxLayout()
@@ -193,13 +193,27 @@ class SiteBoardView(_BaseView):
         vehicle_evs = [e for e in evs if e.get("event_type") == "vehicle"][:2]
         people_evs = [e for e in evs if e.get("event_type") == "personnel"][:3]
         if vehicle_evs:
-            row.addWidget(VehicleSnapshot(vehicle_evs[0]["display_name"], 200, 130))
-            row.addWidget(PlateSnapshot(vehicle_evs[0]["display_name"], 100, 130))
+            v0 = vehicle_evs[0]
+            row.addWidget(SnapshotImage(
+                kind="vehicle", url=v0.get("snapshot_url"), w=200, h=130,
+                alert=v0.get("status_type") in ("alert", "blacklist"),
+                plate_text=v0["display_name"],
+                time_text=v0.get("event_time", "")))
+            row.addWidget(SnapshotImage(
+                kind="plate", url=v0.get("plate_snapshot_url"), w=100, h=40,
+                plate_text=v0["display_name"]))
         for pe in people_evs:
-            row.addWidget(FaceSnapshot(pe["display_name"], 88,
-                                       pe.get("status_type") == "alert"))
+            row.addWidget(SnapshotImage(
+                kind="face", url=pe.get("snapshot_url"), w=88, h=88,
+                alert=pe.get("status_type") == "alert",
+                name=pe["display_name"]))
         if len(vehicle_evs) > 1:
-            row.addWidget(VehicleSnapshot(vehicle_evs[1]["display_name"], 170, 110))
+            v1 = vehicle_evs[1]
+            row.addWidget(SnapshotImage(
+                kind="vehicle", url=v1.get("snapshot_url"), w=170, h=110,
+                alert=v1.get("status_type") in ("alert", "blacklist"),
+                plate_text=v1["display_name"],
+                time_text=v1.get("event_time", "")))
         note = _lbl("● 顯示最近截圖\n新事件進入時自動更新\n黑名單 / 證照過期 截圖將紅框標示",
                     "textMuted", 12)
         note.setWordWrap(True)
@@ -228,7 +242,7 @@ class VehicleView(_BaseView):
         kpi.addWidget(KpiCard("目前在場", k.get("vehicle_inside", 0),
                               "依進出事件估算", "pass", large=True))
         strangers = sum(1 for e in evs if e.get("status_type") == "stranger")
-        kpi.addWidget(KpiCard("陌生車牌", strangers or 4,
+        kpi.addWidget(KpiCard("陌生車牌", strangers,
                               "自動建立 UNKNOWN", "stranger", large=True))
         self._root.addLayout(kpi)
 
@@ -244,15 +258,19 @@ class VehicleView(_BaseView):
         snap.v.addWidget(SectionTitle("最新車輛截圖", latest.get("event_time", "")))
         srow = QHBoxLayout()
         srow.setSpacing(14)
-        srow.addWidget(VehicleSnapshot(latest["display_name"], 240, 150,
-                                       alert=latest.get("status_type") in
-                                       ("alert", "blacklist"),
-                                       time_text=latest.get("event_time", "")))
+        _v_alert = latest.get("status_type") in ("alert", "blacklist")
+        srow.addWidget(SnapshotImage(            # §4.3 車輛全景真實截圖
+            kind="vehicle", url=latest.get("snapshot_url"), w=240, h=150,
+            alert=_v_alert, plate_text=latest["display_name"],
+            time_text=latest.get("event_time", "")))
         info = QVBoxLayout()
         info.setSpacing(4)
         prow = QHBoxLayout()
         prow.setSpacing(8)
-        prow.addWidget(PlateSnapshot(latest["display_name"], 110, 36))
+        prow.addWidget(SnapshotImage(            # §4.3 車牌小圖(並列全景)
+            kind="plate", url=latest.get("plate_snapshot_url"),
+            w=110, h=36, alert=_v_alert,
+            plate_text=latest["display_name"]))
         prow.addWidget(StatusBadge(latest.get("status_type"), latest.get("status", "")))
         prow.addStretch(1)
         info.addLayout(prow)
@@ -302,9 +320,10 @@ class PersonnelView(_BaseView):
                               "今日 00:00 至目前", "out", large=True))
         kpi.addWidget(KpiCard("目前在場", k.get("people_inside", 0),
                               "去重後估算人數", "pass", large=True))
-        bad = sum(1 for e in evs if e.get("status_type") == "alert")
-        kpi.addWidget(KpiCard("證照異常", bad or 5,
-                              "過期 3 · 缺漏 2", "alert", large=True))
+        # §4.4 證照異常：由事件統計（過期=alert；缺漏無來源欄位→不臆造, R-2）
+        expired = sum(1 for e in evs if e.get("status_type") == "alert")
+        kpi.addWidget(KpiCard("證照異常", expired,
+                              f"過期 {expired} · 缺漏 —", "alert", large=True))
         self._root.addLayout(kpi)
 
         mid = QHBoxLayout()
@@ -321,7 +340,11 @@ class PersonnelView(_BaseView):
 
         ev_panel = Panel()
         ev_panel.v.addWidget(SectionTitle("最新人員辨識", f"{len(evs)} 筆"))
-        ev_panel.v.addWidget(_scroll_list([PersonnelDetailRow(e) for e in evs[:15]]), 1)
+        # §4.4 證照過期(紅色告警)需置頂；其餘維持時間序(stable sort)
+        ordered = sorted(evs, key=lambda e: 0 if e.get("status_type")
+                         in ("alert", "blacklist") else 1)
+        ev_panel.v.addWidget(
+            _scroll_list([PersonnelDetailRow(e) for e in ordered[:15]]), 1)
         mid.addWidget(ev_panel, 10)
         self._root.addLayout(mid, 1)
 

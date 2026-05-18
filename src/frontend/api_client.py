@@ -19,7 +19,10 @@ import os
 import threading
 
 import requests
+from collections import OrderedDict
+
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
+from PyQt5.QtGui import QImage
 
 API_BASE = os.environ.get("CARDASH_API", "http://127.0.0.1:8000").rstrip("/")
 
@@ -201,4 +204,67 @@ def resolve_alert_async(site_id: str, alert_id: str, resolution: str,
 
     w.done.connect(_finish)
     _workers.append(w)
+    w.start()
+
+
+# --------------------------------------------------------------------------- #
+# Snapshot image pipeline (spec §4.2/§4.3/§4.4 真實截圖; design P4–P7)
+# Async fetch of /dashboard/snapshots/<name> -> QImage, LRU-cached. GUI thread
+# converts to QPixmap. Never blocks the GUI (repo convention); no cv2.
+# --------------------------------------------------------------------------- #
+_IMG_CACHE: "OrderedDict[str, QImage]" = OrderedDict()
+_IMG_CACHE_MAX = 200
+_snap_workers: list = []
+
+
+class _SnapshotWorker(QThread):
+    loaded = pyqtSignal(str, object)  # (url, QImage|None)
+
+    def __init__(self, url: str, parent=None) -> None:
+        super().__init__(parent)
+        self._url = url
+
+    def run(self) -> None:
+        img = None
+        try:
+            r = requests.get(f"{API_BASE}{self._url}", timeout=6)
+            if r.status_code < 400 and r.content:
+                im = QImage()
+                if im.loadFromData(r.content):
+                    img = im
+        except requests.RequestException:
+            img = None
+        self.loaded.emit(self._url, img)
+
+
+def load_snapshot_async(url: str, on_image) -> None:
+    """Resolve a snapshot URL to a QImage via ``on_image(QImage|None)``.
+    ``on_image`` is always called on the GUI thread. Cache hit -> immediate;
+    miss -> background QThread. ``None`` => caller shows its placeholder."""
+    if not url:
+        on_image(None)
+        return
+    cached = _IMG_CACHE.get(url)
+    if cached is not None:
+        _IMG_CACHE.move_to_end(url)
+        on_image(cached)
+        return
+
+    w = _SnapshotWorker(url)
+
+    def _done(u: str, img) -> None:
+        if img is not None:
+            _IMG_CACHE[u] = img
+            _IMG_CACHE.move_to_end(u)
+            while len(_IMG_CACHE) > _IMG_CACHE_MAX:
+                _IMG_CACHE.popitem(last=False)
+        try:
+            on_image(img)
+        except Exception:
+            pass
+        if w in _snap_workers:
+            _snap_workers.remove(w)
+
+    w.loaded.connect(_done)
+    _snap_workers.append(w)
     w.start()

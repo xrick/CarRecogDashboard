@@ -274,15 +274,26 @@ class MainWindow(QWidget):
             self.set_sub("alert")
 
     # ---- flash cards ----------------------------------------------------
+    @staticmethod
+    def _prio(ev: dict) -> int:
+        # spec §5 優先級: 黑名單/證照過期 > 陌生 > 一般
+        st = ev.get("status_type")
+        return 0 if st in ("alert", "blacklist") else 2 if st == "stranger" else 3
+
     def _push_flash(self, ev: dict):
         card = FlashCard(ev)
+        card._prio = self._prio(ev)
         card.closed.connect(self._dismiss_flash)
         self._flash.append(card)
         self.ov_layout.addWidget(card)
+        # 同時最多 3 張；超過丟掉「優先級最低且最舊」那張 (spec §5 排隊)
         while len(self._flash) > 3:
-            old = self._flash.pop(0)
-            self.ov_layout.removeWidget(old)
-            old.deleteLater()
+            victim = max(self._flash,
+                         key=lambda c: (getattr(c, "_prio", 3),
+                                        -self._flash.index(c)))
+            self._flash.remove(victim)
+            self.ov_layout.removeWidget(victim)
+            victim.deleteLater()
         self.overlay.show()
         self._place_overlay()
 
@@ -298,10 +309,18 @@ class MainWindow(QWidget):
 
     def _place_overlay(self):
         self.overlay.adjustSize()
-        w = 384
         h = self.overlay.sizeHint().height()
-        self.overlay.setGeometry(self.width() - w - 24,
-                                 self.height() - h - 24, w, h)
+        # spec §5: 嚴重告警(黑名單/證照過期) 置中放大；否則右下角
+        severe = any(getattr(c, "severe", False) for c in self._flash)
+        if severe:
+            w = 520
+            x = (self.width() - w) // 2
+            y = max(60, (self.height() - h) // 2)
+        else:
+            w = 384
+            x = self.width() - w - 24
+            y = self.height() - h - 24
+        self.overlay.setGeometry(x, y, w, h)
         self.overlay.raise_()
 
     # ---- timers ---------------------------------------------------------

@@ -6,7 +6,9 @@ spec templates (模板第 3-10 頁).
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PyQt5.QtGui import (
+    QColor, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+)
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
@@ -220,6 +222,86 @@ class PlateSnapshot(QLabel):
             "border-radius:3px;")
 
 
+class SnapshotImage(QWidget):
+    """Real camera snapshot (spec §4.2/§4.3/§4.4). Shows the kind-specific
+    vector placeholder immediately; if ``url`` is given, asynchronously
+    swaps in the real jpeg from /dashboard/snapshots/. Missing/failed image
+    keeps the placeholder + a small「影像缺失」tag (spec §10)."""
+
+    def __init__(self, *, kind: str, url: str | None, w: int, h: int,
+                 alert: bool = False, plate_text: str = "",
+                 time_text: str = "", name: str = "?", parent=None):
+        super().__init__(parent)
+        self.setFixedSize(w, h)
+        self.setStyleSheet("background:transparent;")
+        self._kind, self._w, self._h = kind, w, h
+        self._alert, self._plate, self._time = alert, plate_text, time_text
+        self._had_url = bool(url)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        if kind == "face":
+            ph = FaceSnapshot(name, min(w, h), alert)
+        elif kind == "plate":
+            ph = PlateSnapshot(plate_text or name, w, h)
+        else:
+            ph = VehicleSnapshot(plate_text or name, w, h, alert,
+                                 time_text or "")
+        self._child = ph
+        lay.addWidget(ph, 0, Qt.AlignCenter)
+        if url:
+            from .api_client import load_snapshot_async
+            load_snapshot_async(url, self._on_image)
+
+    def _on_image(self, img) -> None:
+        if img is None or img.isNull():
+            if self._had_url:                       # explicit failure tag
+                tag = QLabel("影像缺失", self)
+                tag.setFont(base_font(9))
+                tag.setStyleSheet(
+                    f"color:{_HEX['alert']};background:rgba(0,0,0,0.55);"
+                    f"padding:0 3px;border-radius:2px;")
+                tag.move(2, self._h - 16)
+                tag.show()
+            return
+        pm = QPixmap.fromImage(img).scaled(
+            self._w, self._h, Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation)
+        if pm.width() > self._w or pm.height() > self._h:
+            pm = pm.copy((pm.width() - self._w) // 2,
+                         (pm.height() - self._h) // 2, self._w, self._h)
+        self._annotate(pm)
+        lbl = QLabel()
+        lbl.setFixedSize(self._w, self._h)
+        lbl.setPixmap(pm)
+        bw = 2 if self._alert else 1
+        bc = _HEX["alert"] if self._alert else _HEX["border"]
+        lbl.setStyleSheet(f"border:{bw}px solid {bc};border-radius:6px;")
+        self.layout().removeWidget(self._child)
+        self._child.deleteLater()
+        self.layout().addWidget(lbl, 0, Qt.AlignCenter)
+        self._child = lbl
+
+    def _annotate(self, pm: QPixmap) -> None:
+        if self._kind != "vehicle" or not (self._plate or self._time):
+            return
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        if self._plate:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 190))
+            pw = min(self._w - 12, 9 * len(self._plate) + 16)
+            p.drawRoundedRect(6, self._h - 24, int(pw), 18, 3, 3)
+            p.setPen(QColor(_HEX["alert"] if self._alert else "#FFE066"))
+            p.setFont(base_font(11, bold=True, mono=True))
+            p.drawText(10, self._h - 24, int(pw), 18, Qt.AlignVCenter,
+                       self._plate)
+        if self._time and self._w > 110:
+            p.setPen(QColor(_HEX["textDim"]))
+            p.setFont(base_font(9, mono=True))
+            p.drawText(self._w - 64, 6, 58, 14, Qt.AlignRight, self._time)
+        p.end()
+
+
 # --------------------------------------------------------------------------- #
 # Event rows
 # --------------------------------------------------------------------------- #
@@ -232,6 +314,14 @@ class EventRow(QFrame):
         h.setSpacing(10)
         h.addWidget(DirectionPill(ev.get("direction")))
         h.addWidget(_lbl(ev.get("event_time", "")[:5], "textDim", 12, mono=True))
+        _is_v = ev.get("event_type") == "vehicle"
+        h.addWidget(SnapshotImage(
+            kind="plate" if _is_v else "face",
+            url=(ev.get("plate_snapshot_url") or ev.get("snapshot_url")),
+            w=46 if _is_v else 34, h=34,
+            alert=ev.get("status_type") in ("alert", "blacklist"),
+            plate_text=ev.get("display_name", ""),
+            name=ev.get("display_name", "?")))
         mid = QVBoxLayout()
         mid.setSpacing(2)
         name = ev.get("display_name", "")
@@ -259,13 +349,18 @@ class VehicleDetailRow(QFrame):
         h = QHBoxLayout(self)
         h.setContentsMargins(14, 12, 14, 12)
         h.setSpacing(12)
+        is_alert = ev.get("status_type") in ("alert", "blacklist")
         h.addWidget(DirectionPill(ev.get("direction")))
         h.addWidget(_lbl(ev.get("event_time", ""), "textDim", 12, mono=True))
-        h.addWidget(PlateSnapshot(ev.get("display_name", ""), 130, 30))
+        h.addWidget(SnapshotImage(
+            kind="plate", url=ev.get("plate_snapshot_url"),
+            w=130, h=30, alert=is_alert,
+            plate_text=ev.get("display_name", "")))   # §4.3 車牌小圖
         col = QVBoxLayout()
         col.setSpacing(2)
         col.addWidget(_lbl(ev.get("contractor", ""), "text", 13))
-        col.addWidget(_lbl(f"{ev.get('detail', '')} · {ev.get('access_result', '')}",
+        # §4.3 車型 · 閘門結果
+        col.addWidget(_lbl(f"{ev.get('detail', '')} · 閘門:{ev.get('access_result', '—')}",
                            "textMuted", 11))
         h.addLayout(col, 1)
         h.addWidget(StatusBadge(ev.get("status_type"), ev.get("status", "")))
@@ -278,18 +373,24 @@ class PersonnelDetailRow(QFrame):
         h = QHBoxLayout(self)
         h.setContentsMargins(14, 12, 14, 12)
         h.setSpacing(12)
+        is_alert = ev.get("status_type") in ("alert", "blacklist")
         h.addWidget(DirectionPill(ev.get("direction")))
         h.addWidget(_lbl(ev.get("event_time", ""), "textDim", 12, mono=True))
-        h.addWidget(FaceSnapshot(ev.get("display_name", "?"), 42,
-                                 ev.get("status_type") == "alert"))
+        h.addWidget(SnapshotImage(
+            kind="face", url=ev.get("snapshot_url"), w=42, h=42,
+            alert=is_alert, name=ev.get("display_name", "?")))  # §4.4 人臉截圖
         col = QVBoxLayout()
         col.setSpacing(2)
-        nm = ev.get("display_name", "")
+        nm = ev.get("display_name", "")          # §4.4 姓名 / 工號
         if ev.get("secondary_id"):
             nm += f"  / {ev['secondary_id']}"
         col.addWidget(_lbl(nm, "text", 13, bold=True))
         col.addWidget(_lbl(f"{ev.get('contractor', '')} · {ev.get('detail', '')}",
                            "textMuted", 11))
+        # §4.4 門禁點 · 辨識時間(到秒) · 通行結果
+        col.addWidget(_lbl(
+            f"{ev.get('site_id', '')} · {ev.get('event_time', '')} · "
+            f"通行:{ev.get('access_result', '—')}", "textMuted", 10))
         h.addLayout(col, 1)
         h.addWidget(StatusBadge(ev.get("status_type"), ev.get("status", "")))
 
@@ -501,8 +602,12 @@ class FlashCard(QFrame):
         self._site = ev.get("site_id", "ALL")
         is_v = ev.get("event_type") == "vehicle"
         is_alert = ev.get("status_type") in ("alert", "blacklist")
-        accent = "alert" if is_alert else ("vehicleIn" if is_v else "in")
-        self.setFixedWidth(360)
+        is_stranger = ev.get("status_type") == "stranger"
+        # spec §5: 黑名單/證照過期 → 置中放大 (main.py reads .severe)
+        self.severe = is_alert
+        accent = ("alert" if is_alert else "stranger" if is_stranger
+                  else ("vehicleIn" if is_v else "in"))
+        self.setFixedWidth(460 if is_alert else 360)
         self.setStyleSheet(
             f"QFrame#flash{{background:{'#1F0A12' if is_alert else _HEX['bgCard']};"
             f"border:2px solid {_HEX['alert'] if is_alert else _HEX['in']};"
@@ -513,10 +618,25 @@ class FlashCard(QFrame):
         v.setSpacing(10)
 
         top = QHBoxLayout()
-        kind = ("車輛" if is_v else "人員") + ("告警" if is_alert else "進場")
+        if is_alert:
+            kind = ("車輛" if is_v else "人員") + "告警"
+        elif is_stranger and is_v:
+            kind = "陌生車牌自動註冊"            # 模板 p.5 第三型
+        else:
+            kind = ("車輛" if is_v else "人員") + (
+                "進場" if ev.get("direction") == "IN" else "離場")
         top.addWidget(_lbl(f"● {kind}", accent, 13, bold=True))
         top.addStretch(1)
         top.addWidget(_lbl(ev.get("event_time", ""), "textMuted", 11, mono=True))
+        close = QPushButton("✕")            # §5 警示可人工關閉
+        close.setCursor(Qt.PointingHandCursor)
+        close.setFixedSize(20, 20)
+        close.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{_HEX['textMuted']};"
+            f"border:none;font-weight:700;}}"
+            f"QPushButton:hover{{color:{_HEX['text']};}}")
+        close.clicked.connect(lambda: self.closed.emit(self._id))
+        top.addWidget(close)
         v.addLayout(top)
         line = QFrame()
         line.setFixedHeight(1)
@@ -526,12 +646,16 @@ class FlashCard(QFrame):
         body = QHBoxLayout()
         body.setSpacing(12)
         if is_v:
-            body.addWidget(VehicleSnapshot(ev.get("display_name", ""), 130, 84,
-                                           alert=is_alert,
-                                           time_text=ev.get("event_time", "")))
+            body.addWidget(SnapshotImage(           # 真實車輛截圖
+                kind="vehicle", url=ev.get("snapshot_url"),
+                w=160 if is_alert else 130, h=100 if is_alert else 84,
+                alert=is_alert, plate_text=ev.get("display_name", ""),
+                time_text=ev.get("event_time", "")))
         else:
-            body.addWidget(FaceSnapshot(ev.get("display_name", "?"), 84,
-                                        alert=is_alert))
+            body.addWidget(SnapshotImage(           # 真實人臉截圖
+                kind="face", url=ev.get("snapshot_url"),
+                w=100 if is_alert else 84, h=100 if is_alert else 84,
+                alert=is_alert, name=ev.get("display_name", "?")))
         info = QVBoxLayout()
         info.setSpacing(2)
         info.addWidget(_lbl(ev.get("display_name", ""), "text", 20, bold=True,
@@ -540,6 +664,9 @@ class FlashCard(QFrame):
             info.addWidget(_lbl(f"/ {ev['secondary_id']}", "textMuted", 12))
         info.addWidget(_lbl(ev.get("contractor", ""), "textDim", 12))
         info.addWidget(_lbl(ev.get("detail", ""), "textMuted", 11))
+        if is_stranger and is_v:                # 模板 p.5 第三型文案
+            info.addWidget(_lbl("車輛截圖已保存 · 待管理平台確認",
+                                "stranger", 11))
         info.addStretch(1)
         body.addLayout(info, 1)
         v.addLayout(body)
@@ -581,7 +708,8 @@ class FlashCard(QFrame):
             ack.addWidget(b2, 1)
             v.addLayout(ack)
 
-        QTimer.singleShot(8000 if is_alert else 5000,
+        # spec §5: 一般 5s；警示 8–15s（取 12s，且上方 ✕ 可人工關閉）
+        QTimer.singleShot(12000 if is_alert else 5000,
                           lambda: self.closed.emit(self._id))
 
     def _ack(self, resolution: str, b1, b2) -> None:
