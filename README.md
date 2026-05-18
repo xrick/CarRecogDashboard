@@ -67,9 +67,11 @@ the screen is never blanked (spec §10 斷線處理).
 source run_env.sh                 # in-tree venv
 pip install -r requirements.txt   # first time (FastAPI/uvicorn)
 
-./run_backend.sh                  # terminal 1 -> http://0.0.0.0:8000  (/docs)
-./run_frontend.sh                 # terminal 2  (add --fullscreen for kiosk)
-# point the board elsewhere:  CARDASH_API=http://host:8000 ./run_frontend.sh
+./start_service.sh                # 背景啟動 後端+前端 -> http://0.0.0.0:8000 (/docs)
+./start_service.sh -- --fullscreen   # kiosk 全螢幕
+./stop_service.sh                 # 停止整個系統
+# 自訂:  ./start_service.sh 0.0.0.0 8000  |  CARDASH_API=http://host:8000 ./start_service.sh
+# log: logs/backend.log logs/frontend.log   PID: run/*.pid
 ```
 
 ## Keyboard (spec §9)

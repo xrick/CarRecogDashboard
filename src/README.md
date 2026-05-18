@@ -61,9 +61,11 @@ pip install -r requirements.txt          # first time
 
 # Camera mode: cp config/cameras.example.json config/cameras.json and edit.
 # No config (or simulate:true) → demo simulator, identical pipeline.
-./run_backend.sh                         # http://0.0.0.0:8000  (/docs)
-./run_frontend.sh                        # add --fullscreen for kiosk
+./start_service.sh                       # background: backend + board (/docs)
+./start_service.sh -- --fullscreen       # kiosk fullscreen
+./stop_service.sh                        # stop the whole system
 # CARDASH_CONFIG / CARDASH_DB / CARDASH_API env vars override paths.
+# logs/backend.log logs/frontend.log · run/*.pid
 ```
 
 ## Camera → board field mapping
