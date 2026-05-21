@@ -358,6 +358,29 @@ def latest_events(site_id: str, limit: int = 20) -> list[dict]:
     return out
 
 
+def vehicle_events_in_range(site_id: str, start_iso: str, end_iso: str, *,
+                            plate_like: str | None = None,
+                            limit: int = 200) -> list[dict]:
+    """Vehicle events whose ``event_ts`` ∈ [start_iso, end_iso].
+    Backs the simulate-mode fallback for §4.10.19 history search."""
+    sql = ("SELECT event_id, site_id, site_name, event_ts, event_time, "
+           "display_name, snapshot_url "
+           "FROM event WHERE event_type='vehicle' "
+           "AND event_ts BETWEEN ? AND ? ")
+    args: list = [start_iso, end_iso]
+    if site_id != "ALL":
+        sql += "AND site_id=? "
+        args.append(site_id)
+    if plate_like:
+        sql += "AND display_name LIKE ? "
+        args.append(f"%{plate_like}%")
+    sql += "ORDER BY event_ts DESC LIMIT ?"
+    args.append(limit)
+    with _lock:
+        rows = _c().execute(sql, tuple(args)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def hourly_trend(site_id: str) -> dict:
     with _lock:
         if site_id == "ALL":

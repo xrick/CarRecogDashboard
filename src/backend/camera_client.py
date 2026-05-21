@@ -19,6 +19,10 @@ Endpoints used (only what the 工地看板 needs):
 * §10.7.8 POST /cgi-bin/api/VehicleRegisterDB/startFind|doFind|stopFind
           (fallback when recordFinder not implemented — XC-204BLPR returns 400,
           so this path is rarely usable on that model; primary works anyway)
+* §4.10.19 GET /cgi-bin/loadfile.cgi?action=downPicByTime  (history search:
+          bulk-download traffic snapshots by time range. Returns multipart with
+          interleaved JSON metadata + JPEG parts; one HTTP request yields all
+          captures in the window. Backs the "歷史車牌查詢" dashboard feature.)
 
 Conventions match the repo (tests/demo2_writelist.py): Session + HTTPDigestAuth,
 verify=False for self-signed HTTPS, key=value response parsing.
@@ -124,6 +128,19 @@ class CameraError(RuntimeError):
 class _Part:
     content_type: str
     body: bytes
+
+
+@dataclass
+class HistoricalCapture:
+    """One ANPR snapshot recovered from §4.10.19 downPicByTime.
+    ``utc`` is epoch seconds; ``utcms`` is the millisecond offset
+    (spec §4.10.19 keeps them separate). Combine via utc + utcms/1000."""
+    plate: str
+    speed: int                     # km/h
+    utc: int                       # epoch seconds
+    utcms: int                     # ms offset within the second (0-999)
+    address: str
+    jpeg: bytes
 
 
 @dataclass
@@ -304,6 +321,57 @@ class CameraClient:
             if line.lower().startswith(b"content-type:"):
                 ct = line.split(b":", 1)[1].strip().decode("latin-1")
         return _Part(content_type=ct, body=body)
+
+    # ---- history search (§4.10.19) -------------------------------------
+    def download_traffic_pics_by_time(
+        self, start: str, end: str, *,
+        channel: Optional[int] = None, types: str = "jpg", flags: str = "*",
+    ) -> Iterator["HistoricalCapture"]:
+        """§4.10.19 按时间范围下载交通抓拍图片文件.
+
+        One HTTP request fetches all ANPR snapshots in [start, end] from the
+        camera/NVR (主場是 NVR — single IPC SD card 通常只有近期). Each
+        capture is delivered as **a pair of multipart parts**: a JSON metadata
+        part (plate / speed / UTC / address) followed by the JPEG binary.
+
+        Time format: ``YYYY-MM-DD HH:MM:SS`` (local) — the spec also accepts
+        ``startTimeRealUTC=YYYY-MM-DDTHH:MM:SSZ`` but we keep the simpler
+        local-time form to match the rest of the codebase. ``channel`` default
+        is the configured channel; pass ``-1`` for all channels (NVR).
+
+        Yields ``HistoricalCapture(plate, speed, utc, utcms, address, jpeg)``
+        — caller is responsible for persisting JPEGs and surfacing metadata.
+        Network failures raise ``CameraError`` (callers should treat as
+        empty-result, mirroring D4 list semantics)."""
+        url = (f"{self.cfg.base_url}/cgi-bin/loadfile.cgi"
+               f"?action=downPicByTime"
+               f"&channel={channel if channel is not None else self.cfg.channel}"
+               f"&startTime={start}&endTime={end}"
+               f"&Types={types}&Flags={flags}")
+        pending: Optional[dict] = None
+        try:
+            for part in self._iter_parts(url):
+                ct = part.content_type.lower()
+                body = part.body
+                if "json" in ct:
+                    try:
+                        pending = json.loads(body)
+                    except (ValueError, TypeError):
+                        pending = None
+                elif ("jpeg" in ct or "jpg" in ct) and pending is not None:
+                    info = (pending.get("filedata") or {}).get("info") or {}
+                    yield HistoricalCapture(
+                        plate=str(info.get("plateNum", "")).strip(),
+                        speed=int(info.get("Speed") or 0),
+                        utc=int(info.get("UTC") or 0),
+                        utcms=int(info.get("UTCMS") or 0),
+                        address=str(info.get("address", "")).strip(),
+                        jpeg=body,
+                    )
+                    pending = None
+        except requests.RequestException as e:
+            raise CameraError(f"§4.10.19 downPicByTime failed: "
+                              f"{type(e).__name__}: {str(e)[:120]}")
 
     # ---- still image (§4.4.2) ------------------------------------------
     def snapshot(self, channel: Optional[int] = None) -> bytes:

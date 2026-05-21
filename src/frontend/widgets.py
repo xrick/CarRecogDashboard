@@ -72,6 +72,31 @@ class SectionTitle(QWidget):
         self.setStyleSheet(f"border-bottom:1px solid {_HEX['border']};")
 
 
+class SiteHeaderBar(QWidget):
+    """單一工地頁首列 — spec 模板 p.4：右側顯示 "工地：xxx" + "最後更新 HH:MM" 綠徽章。"""
+
+    def __init__(self, site_name: str, last_update: str = "—", parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(36)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(12)
+        h.addStretch(1)
+
+        prefix = _lbl("工地：", "textMuted", 14)
+        name = _lbl(site_name or "—", "text", 14, bold=True)
+        h.addWidget(prefix)
+        h.addWidget(name)
+
+        last_hm = (last_update or "—")[:5]
+        badge = QLabel(f"最後更新 {last_hm}")
+        badge.setFont(base_font(12, bold=True, mono=True))
+        badge.setStyleSheet(
+            f"color:{_HEX['pass']};background:{rgba('pass', 0.18)};"
+            f"padding:4px 12px;border-radius:4px;")
+        h.addWidget(badge)
+
+
 class KpiCard(QFrame):
     def __init__(self, label, value, sub="", accent="in", large=False, parent=None):
         super().__init__(parent)

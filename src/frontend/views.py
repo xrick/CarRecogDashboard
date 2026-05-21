@@ -24,7 +24,8 @@ from .theme import COLORS, base_font
 from .widgets import (
     AICopilotSummary, AlertCard, EventRow, KpiCard, Panel,
     PersonnelDetailRow, PlateSnapshot, SectionTitle, SiteCard,
-    StatusBadge, VehicleDetailRow, VehicleSnapshot, FaceSnapshot, _lbl,
+    SiteHeaderBar, StatusBadge, VehicleDetailRow, VehicleSnapshot,
+    FaceSnapshot, _lbl,
 )
 
 _H = COLORS
@@ -146,62 +147,78 @@ class OverviewView(_BaseView):
 
 # --------------------------------------------------------------------------- #
 class SiteBoardView(_BaseView):
+    """單一工地看板 — spec §3.2，模板 p.4「人員 + 車輛同屏」."""
+
     def _build(self):
         s = self.state
         k = s.get("site_summary", {})
         tr = s.get("trend", {})
+        evs = s.get("events", [])
+
+        # (1) Header bar：右上「工地：xxx」+「最後更新 HH:MM」綠徽章
+        self._root.addWidget(SiteHeaderBar(
+            site_name=k.get("site_name", ""),
+            last_update=k.get("last_update_time", "—"),
+        ))
+
+        # (2) KPI 6 cards — 人員 3 + 車輛 3
         kpi = QHBoxLayout()
         kpi.setSpacing(10)
         for lab, key, ck, sub in (
-            ("人員進場", "people_in", "in", "今日累計人次"),
-            ("人員離場", "people_out", "out", "今日累計人次"),
-            ("目前在場", "people_inside", "pass", "人員即時在場"),
-            ("車輛進場", "vehicle_in", "vehicleIn", "今日累計車次"),
-            ("車輛離場", "vehicle_out", "vehicleOut", "今日累計車次"),
-            ("車輛在場", "vehicle_inside", "stranger", "車輛即時在場"),
+            ("人員進場", "people_in",      "in",        "今日累計人次"),
+            ("人員出場", "people_out",     "out",       "今日累計人次"),
+            ("目前在場", "people_inside",  "pass",      "人員即時在場"),
+            ("車輛進場", "vehicle_in",     "vehicleIn", "今日累計車次"),
+            ("車輛出場", "vehicle_out",    "vehicleOut","今日累計車次"),
+            ("車輛在場", "vehicle_inside", "stranger",  "車輛即時在場"),
         ):
             kpi.addWidget(KpiCard(lab, k.get(key, 0), sub, ck))
         self._root.addLayout(kpi)
 
+        # (3) Mid row：趨勢圖 (左) + 最新快訊與截圖 (右)
         mid = QHBoxLayout()
         mid.setSpacing(12)
+
         chart_panel = Panel()
-        cur = tr.get("current_hour", 14)
-        chart_panel.v.addWidget(SectionTitle(
-            "今日 0-24H 進出趨勢與預測",
-            f"目前 {cur} 時 · AI 預測延伸 4H · 信賴帶 ±30%"))
+        chart_panel.v.addWidget(SectionTitle("今日 0-24 小時進出趨勢"))
+        # 模板 p.4 只放 2 系列：人員進場 (bar) + 車輛進場 (line)，無 AI 預測
         ch = HourlyChart(
-            bars=[("people_in", "in", "人員進場"), ("people_out", "out", "人員離場")],
-            lines=[("vehicle_in", "vehicleIn", "車輛進場"),
-                   ("vehicle_out", "vehicleOut", "車輛離場")],
-            show_forecast=True)
-        ch.set_data(tr.get("trend", []), tr.get("forecast", []), cur)
+            bars=[("people_in", "in", "人員進場")],
+            lines=[("vehicle_in", "vehicleIn", "車輛進場")],
+            show_forecast=False, legend=True)
+        ch.set_data(tr.get("trend", []), [], tr.get("current_hour", 14))
         chart_panel.v.addWidget(ch, 1)
         mid.addWidget(chart_panel, 16)
 
         ev_panel = Panel()
-        evs = s.get("events", [])
-        ev_panel.v.addWidget(SectionTitle("最新事件", f"最新 {min(len(evs), 6)} 筆"))
-        ev_panel.v.addWidget(_scroll_list([EventRow(e) for e in evs[:8]]), 1)
+        ev_panel.v.addWidget(SectionTitle("最新快訊與截圖", "即時推送"))
+        ev_panel.v.addWidget(_scroll_list([EventRow(e) for e in evs[:5]]), 1)
         mid.addWidget(ev_panel, 10)
         self._root.addLayout(mid, 1)
 
+        # (4) 現場影像參考：固定 2 車 + 1 人 (模板 p.4)
         snap = Panel()
-        snap.v.addWidget(SectionTitle("最新現場影像", "同步事件"))
+        snap.v.addWidget(SectionTitle("現場影像參考"))
         row = QHBoxLayout()
         row.setSpacing(14)
         vehicle_evs = [e for e in evs if e.get("event_type") == "vehicle"][:2]
-        people_evs = [e for e in evs if e.get("event_type") == "personnel"][:3]
+        people_evs = [e for e in evs if e.get("event_type") == "personnel"][:1]
         if vehicle_evs:
-            row.addWidget(VehicleSnapshot(vehicle_evs[0]["display_name"], 200, 130))
-            row.addWidget(PlateSnapshot(vehicle_evs[0]["display_name"], 100, 130))
-        for pe in people_evs:
-            row.addWidget(FaceSnapshot(pe["display_name"], 88,
-                                       pe.get("status_type") == "alert"))
+            row.addWidget(VehicleSnapshot(
+                vehicle_evs[0]["display_name"], 200, 130,
+                alert=vehicle_evs[0].get("status_type") in ("alert", "blacklist")))
+        if people_evs:
+            row.addWidget(FaceSnapshot(
+                people_evs[0]["display_name"], 120,
+                alert=people_evs[0].get("status_type") == "alert"))
         if len(vehicle_evs) > 1:
-            row.addWidget(VehicleSnapshot(vehicle_evs[1]["display_name"], 170, 110))
-        note = _lbl("● 顯示最近截圖\n新事件進入時自動更新\n黑名單 / 證照過期 截圖將紅框標示",
-                    "textMuted", 12)
+            row.addWidget(VehicleSnapshot(
+                vehicle_evs[1]["display_name"], 170, 110,
+                alert=vehicle_evs[1].get("status_type") in ("alert", "blacklist")))
+        note = _lbl(
+            "快訊跳卡顯示 5–8 秒，可設定是否保留在右側最新清單。\n"
+            "黑名單、證照過期、陌生車牌會優先顯示。",
+            "textMuted", 12)
         note.setWordWrap(True)
         row.addWidget(note, 1)
         rw = QWidget()

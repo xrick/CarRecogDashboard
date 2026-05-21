@@ -207,3 +207,26 @@ class CopilotSummary(BaseModel):
     sources: str
     model: str
     generated_at: str
+
+
+class HistoricalPlate(BaseModel):
+    """歷史車牌查詢結果 — 來自相機/NVR §4.10.19 downPicByTime。
+    Simulate 模式下從 events 表合成。"""
+    plate: str
+    speed: int = 0                  # km/h
+    event_ts: str                   # ISO8601 local time
+    event_time: str                 # HH:MM:SS
+    address: str = ""
+    snapshot_url: Optional[str] = None
+    source: str = Field(..., description="camera | nvr | simulate")
+    host: Optional[str] = None      # camera/NVR host that served this record
+    channel: Optional[int] = None
+
+
+class HistoricalPlateResponse(BaseModel):
+    site_id: str
+    start: str
+    end: str
+    total: int
+    mode: str = Field(..., description="camera | nvr | simulate")
+    items: list[HistoricalPlate]
