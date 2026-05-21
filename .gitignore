@@ -3,3 +3,5 @@
 config/cameras.json
 data/siteboard.db*
 data/snapshots/
+/src/backend/__pycache__
+*.pyc
