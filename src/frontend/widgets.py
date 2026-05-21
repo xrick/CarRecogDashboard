@@ -5,13 +5,32 @@ spec templates (模板第 3-10 頁).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PyQt5.QtGui import (
+    QColor, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+)
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from .theme import COLORS, base_font
+
+_PLACEHOLDER_DIR = Path(__file__).resolve().parents[2] / "assets" / "placeholders"
+_PLACEHOLDER: dict[str, QPixmap | None] = {"car": None, "person": None}
+
+
+def _placeholder(kind: str) -> QPixmap | None:
+    """Lazy-load (and cache) assets/placeholders/{car,person}.png.
+    Returns None if the file is missing; callers fall back to vector art."""
+    pm = _PLACEHOLDER.get(kind)
+    if pm is None:
+        path = _PLACEHOLDER_DIR / f"{kind}.png"
+        loaded = QPixmap(str(path)) if path.exists() else QPixmap()
+        _PLACEHOLDER[kind] = loaded
+        pm = loaded
+    return pm if not pm.isNull() else None
 
 _HEX = COLORS
 
@@ -223,33 +242,144 @@ class PlateSnapshot(QLabel):
 # --------------------------------------------------------------------------- #
 # Event rows
 # --------------------------------------------------------------------------- #
+class EventThumbnail(QWidget):
+    """Left-side thumbnail for an EventRow — spec 模板 p.3.
+
+    Order of preference: ``snapshot_path`` (future real JPEG from ingest) →
+    placeholder PNG (assets/placeholders/{car,person}.png) → vector fallback
+    (VehicleSnapshot / FaceSnapshot, scaled down). Vehicles render landscape
+    64×44; personnel render circular 44×44 so the headshot reads cleanly.
+    """
+
+    def __init__(self, event_type: str, status_type: str | None = None,
+                 snapshot_path: str | None = None, parent=None):
+        super().__init__(parent)
+        self._event_type = event_type or "vehicle"
+        self._alert = status_type in ("alert", "blacklist")
+        self._is_person = self._event_type == "personnel"
+        self._pix: QPixmap | None = None
+        if snapshot_path:
+            pm = QPixmap(snapshot_path)
+            if not pm.isNull():
+                self._pix = pm
+        if self._pix is None:
+            self._pix = _placeholder("person" if self._is_person else "car")
+        if self._is_person:
+            self.setFixedSize(44, 44)
+        else:
+            self.setFixedSize(64, 44)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        W, H = self.width(), self.height()
+        border = QColor(_HEX["alert"] if self._alert else _HEX["borderLight"])
+
+        if self._is_person:
+            path = QPainterPath()
+            path.addEllipse(1, 1, W - 2, H - 2)
+            p.setClipPath(path)
+            if self._pix is not None:
+                p.drawPixmap(0, 0, self._pix.scaled(
+                    W, H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            else:
+                self._draw_face_fallback(p, W, H)
+            p.setClipping(False)
+            p.setPen(QPen(border, 2 if self._alert else 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(1, 1, W - 2, H - 2)
+        else:
+            path = QPainterPath()
+            path.addRoundedRect(1, 1, W - 2, H - 2, 6, 6)
+            p.setClipPath(path)
+            if self._pix is not None:
+                p.drawPixmap(0, 0, self._pix.scaled(
+                    W, H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            else:
+                self._draw_car_fallback(p, W, H)
+            p.setClipping(False)
+            p.setPen(QPen(border, 2 if self._alert else 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(1, 1, W - 2, H - 2, 6, 6)
+        p.end()
+
+    @staticmethod
+    def _draw_car_fallback(p: QPainter, W: int, H: int) -> None:
+        g = QLinearGradient(0, 0, 0, H)
+        g.setColorAt(0, QColor("#1A2D52"))
+        g.setColorAt(1, QColor("#0F1B33"))
+        p.fillRect(0, 0, W, H, g)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(143, 163, 199, 200))
+        p.drawRoundedRect(int(W * 0.12), int(H * 0.40),
+                          int(W * 0.76), int(H * 0.36), 4, 4)
+        p.drawRoundedRect(int(W * 0.22), int(H * 0.24),
+                          int(W * 0.56), int(H * 0.22), 3, 3)
+
+    @staticmethod
+    def _draw_face_fallback(p: QPainter, W: int, H: int) -> None:
+        g = QLinearGradient(0, 0, W, H)
+        g.setColorAt(0, QColor("#1E3A6B"))
+        g.setColorAt(1, QColor("#2A4F8E"))
+        p.fillRect(0, 0, W, H, g)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(143, 163, 199, 200))
+        p.drawEllipse(int(W * 0.34), int(H * 0.22),
+                      int(W * 0.32), int(W * 0.32))
+        path = QPainterPath()
+        path.moveTo(W * 0.18, H * 0.92)
+        path.quadTo(W * 0.5, H * 0.55, W * 0.82, H * 0.92)
+        p.drawPath(path)
+
+
 class EventRow(QFrame):
+    """模板 p.3 列卡：左縮圖 + 主標 + 子資訊 + 右側 進/出 與時間 + 狀態徽章。"""
+
     def __init__(self, ev: dict, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(f"border-bottom:1px solid {_HEX['border']};")
+        self.setStyleSheet(
+            f"QFrame{{background:{_HEX['bgCard']};"
+            f"border:1px solid {_HEX['border']};border-radius:8px;}}")
         h = QHBoxLayout(self)
-        h.setContentsMargins(12, 9, 12, 9)
-        h.setSpacing(10)
-        h.addWidget(DirectionPill(ev.get("direction")))
-        h.addWidget(_lbl(ev.get("event_time", "")[:5], "textDim", 12, mono=True))
+        h.setContentsMargins(12, 10, 12, 10)
+        h.setSpacing(12)
+
+        h.addWidget(EventThumbnail(
+            ev.get("event_type", "vehicle"),
+            ev.get("status_type"),
+            ev.get("snapshot_url"),
+        ), 0, Qt.AlignVCenter)
+
         mid = QVBoxLayout()
         mid.setSpacing(2)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addWidget(DirectionPill(ev.get("direction")))
+        top.addStretch(1)
+        top.addWidget(_lbl(ev.get("event_time", "")[:5], "textDim", 11, mono=True))
+        mid.addLayout(top)
+
         name = ev.get("display_name", "")
         if ev.get("secondary_id"):
             name += f"  / {ev['secondary_id']}"
-        mid.addWidget(_lbl(name, "text", 13, bold=True,
+        mid.addWidget(_lbl(name, "text", 14, bold=True,
                            mono=(ev.get("event_type") == "vehicle")))
-        meta = f"{ev.get('site_id', '')} · {ev.get('contractor', '')} · {ev.get('detail', '')}"
+        meta = " · ".join(x for x in (
+            ev.get("site_id"), ev.get("contractor"), ev.get("detail")) if x)
         mid.addWidget(_lbl(meta, "textMuted", 11))
-        h.addLayout(mid, 1)
-        right = QVBoxLayout()
-        right.setSpacing(3)
-        right.setAlignment(Qt.AlignRight)
-        right.addWidget(StatusBadge(ev.get("status_type"), ev.get("status", "")),
-                        0, Qt.AlignRight)
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(6)
+        bottom.setContentsMargins(0, 2, 0, 0)
+        bottom.addStretch(1)
+        bottom.addWidget(StatusBadge(ev.get("status_type"),
+                                     ev.get("status", "")))
         if ev.get("confidence") is not None:
-            right.addWidget(ConfidenceChip(ev["confidence"]), 0, Qt.AlignRight)
-        h.addLayout(right)
+            bottom.addWidget(ConfidenceChip(ev["confidence"]))
+        mid.addLayout(bottom)
+
+        h.addLayout(mid, 1)
 
 
 class VehicleDetailRow(QFrame):
